@@ -1,0 +1,142 @@
+//@version=6
+// =============================================================================
+// Skema 2 — MANAJER EKSEKUSI (bukan pembangkit sinyal)
+// =============================================================================
+// BACA INI DULU. Script ini TIDAK bisa mencari sinyal Skema 2 sendiri.
+//
+// Sinyal Skema 2 = funding 24 jam <= 0  DAN  z-score funding 30 hari <= -0.75.
+// Keduanya butuh FUNDING RATE Binance, yang tidak tersedia sebagai deret data
+// di TradingView. Yang sudah diuji dan GAGAL sebagai pengganti:
+//
+//   selisih perp vs spot (basis)  -> korelasi dgn funding = +0.008
+//                                    sepakat tanda        = 50.7%  (lempar koin)
+//                                    menangkap sinyal asli= 18.8%
+//
+// Jadi jangan memakai basis sebagai proksi funding. Hasilnya akan acak.
+//
+// CARA PAKAI:
+//   1. Jalankan scanner (Python) untuk dapat daftar "SYMBOL + TANGGAL".
+//   2. Buka chart 1 JAM symbol tersebut.
+//   3. Tempel tanggal-tanggalnya ke input "Tanggal sinyal" di bawah.
+//   4. Script menjalankan aturan keluar Skema 2 persis dan menggambar hasilnya.
+//
+// Yang direplika persis dari backtest:
+//   - entry di open bar 00:00 UTC pada tanggal sinyal
+//   - stop -3%, target +6%, batas waktu 48 jam, mana yang duluan
+//   - kalau stop & target tersentuh di bar 1H yang sama -> STOP dianggap duluan
+//   - sizing dinamis: margin 3% x ekuitas berjalan x leverage 2x
+//   - biaya limit order 0.02% per sisi
+// =============================================================================
+
+strategy("Skema 2 - manajer eksekusi (sinyal dari luar)",
+     overlay              = true,
+     initial_capital      = 100,
+     currency             = currency.USD,
+     default_qty_type     = strategy.fixed,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.02,          // maker/limit, per sisi
+     pyramiding           = 0,
+     calc_on_every_tick   = false,
+     process_orders_on_close = false)
+
+// ------------------------------------------------------------------ input
+gS = "Sinyal (dari scanner)"
+datesRaw = input.text_area("", "Tanggal sinyal (YYYY-MM-DD, satu per baris atau dipisah koma)",
+     group = gS, tooltip = "Tempel keluaran scanner untuk symbol ini. Kosong = tidak ada trade.")
+
+gX = "Aturan keluar Skema 2"
+stopPct   = input.float(3.0, "Stop (%)",   minval = 0.1, step = 0.1, group = gX)
+targetPct = input.float(6.0, "Target (%)", minval = 0.1, step = 0.1, group = gX)
+holdHours = input.int(48, "Batas waktu (jam)", minval = 1, maxval = 168, group = gX)
+entryHour = input.int(0, "Jam entry (UTC)", minval = 0, maxval = 23, group = gX)
+
+gZ = "Sizing (action plan §0.1)"
+marginPct = input.float(3.0, "Margin per trade (% ekuitas berjalan)", minval = 0.1, group = gZ)
+leverage  = input.float(2.0, "Leverage", minval = 1, group = gZ)
+stepSize  = input.float(1.0, "stepSize symbol ini", minval = 0.00000001, group = gZ,
+     tooltip = "Ambil dari results/gate_per_symbol.csv kolom step_size_mode.")
+quantTol  = input.float(10.0, "Toleransi kuantisasi (%)", minval = 0, group = gZ)
+
+// ------------------------------------------------------------------ parse tanggal
+var array<string> sigDates = array.new<string>()
+if barstate.isfirst and str.length(datesRaw) > 0
+    cleaned = str.replace_all(str.replace_all(datesRaw, "\n", ","), " ", "")
+    for part in str.split(cleaned, ",")
+        if str.length(part) == 10
+            sigDates.push(part)
+
+todayStr = str.format_time(time, "yyyy-MM-dd", "UTC")
+isSignalDate = sigDates.size() > 0 and sigDates.includes(todayStr)
+
+// ------------------------------------------------------------------ timing
+secPerBar = timeframe.in_seconds()
+holdBars  = math.max(1, math.round(holdHours * 3600.0 / secPerBar))
+isHourly  = timeframe.isminutes and timeframe.multiplier == 60
+nextStart = time + secPerBar * 1000
+// bar sinyal = bar yang CLOSED tepat di jam entry; order terisi di open berikutnya
+atEntryEdge = hour(nextStart, "UTC") == entryHour and minute(nextStart, "UTC") == 0
+
+// ------------------------------------------------------------------ sizing dinamis
+equityNow = strategy.equity
+notional  = equityNow * marginPct / 100.0 * leverage
+qtyIdeal  = notional / close
+qtyActual = math.floor(qtyIdeal / stepSize) * stepSize
+notReal   = qtyActual * close
+quantErr  = math.abs(notReal - notional) / notional * 100.0
+execOK    = qtyActual >= stepSize and quantErr <= quantTol
+
+// ------------------------------------------------------------------ entry
+// Tanggal sinyal dari scanner mengacu pada tanggal ENTRY, jadi bar pemicunya
+// adalah bar terakhir hari SEBELUMNYA (yang closed tepat di jam entry).
+nextDayStr = str.format_time(time + secPerBar * 1000, "yyyy-MM-dd", "UTC")
+fireHere   = sigDates.size() > 0 and sigDates.includes(nextDayStr) and atEntryEdge
+
+canEnter = isHourly and fireHere and execOK and strategy.position_size == 0 and qtyActual > 0
+if canEnter
+    strategy.entry("L", strategy.long, qty = qtyActual)
+
+// ------------------------------------------------------------------ exit
+// Stop & target dipasang bersamaan. Pine mengisi stop lebih dulu kalau keduanya
+// tersentuh di bar yang sama — sama dengan asumsi konservatif di backtest.
+if strategy.position_size > 0
+    ep = strategy.opentrades.entry_price(0)
+    strategy.exit("X", "L",
+         stop  = ep * (1 - stopPct / 100.0),
+         limit = ep * (1 + targetPct / 100.0))
+    barsHeld = bar_index - strategy.opentrades.entry_bar_index(0)
+    if barsHeld >= holdBars - 1
+        strategy.close("L", comment = "batas " + str.tostring(holdHours) + "h")
+
+// ------------------------------------------------------------------ panel
+var table t = table.new(position.top_right, 2, 10, border_width = 1)
+if barstate.islast
+    ok  = color.new(color.green, 80)
+    bad = color.new(color.red, 80)
+    warn = color.new(color.orange, 80)
+    table.cell(t, 0, 0, "Skema 2 — eksekusi", text_size = size.small, bgcolor = color.new(color.blue, 80))
+    table.cell(t, 1, 0, isHourly ? "chart 1H OK" : "PAKAI CHART 1H", text_size = size.small,
+         bgcolor = isHourly ? ok : bad)
+    table.cell(t, 0, 1, "tanggal sinyal dimuat", text_size = size.tiny)
+    table.cell(t, 1, 1, str.tostring(sigDates.size()), text_size = size.tiny,
+         bgcolor = sigDates.size() > 0 ? ok : bad)
+    table.cell(t, 0, 2, "ekuitas", text_size = size.tiny)
+    table.cell(t, 1, 2, "$" + str.tostring(equityNow, "#.##"), text_size = size.tiny)
+    table.cell(t, 0, 3, "notional sekarang", text_size = size.tiny)
+    table.cell(t, 1, 3, "$" + str.tostring(notional, "#.###"), text_size = size.tiny)
+    table.cell(t, 0, 4, "qty setelah stepSize", text_size = size.tiny)
+    table.cell(t, 1, 4, str.tostring(qtyActual, "#.########"), text_size = size.tiny)
+    table.cell(t, 0, 5, "error kuantisasi", text_size = size.tiny)
+    table.cell(t, 1, 5, str.tostring(quantErr, "#.##") + "%", text_size = size.tiny,
+         bgcolor = quantErr <= quantTol ? ok : bad)
+    table.cell(t, 0, 6, "executable", text_size = size.tiny)
+    table.cell(t, 1, 6, execOK ? "YA" : "TIDAK", text_size = size.tiny, bgcolor = execOK ? ok : bad)
+    table.cell(t, 0, 7, "trade selesai", text_size = size.tiny)
+    table.cell(t, 1, 7, str.tostring(strategy.closedtrades), text_size = size.tiny)
+    table.cell(t, 0, 8, "net profit", text_size = size.tiny)
+    table.cell(t, 1, 8, "$" + str.tostring(strategy.netprofit, "#.##"), text_size = size.tiny,
+         bgcolor = strategy.netprofit >= 0 ? ok : bad)
+    table.cell(t, 0, 9, "SINYAL dari scanner", text_size = size.tiny, bgcolor = warn)
+    table.cell(t, 1, 9, "bukan dari script ini", text_size = size.tiny, bgcolor = warn)
+
+bgcolor(canEnter ? color.new(color.green, 88) : na)
+plotshape(canEnter, "entry", shape.triangleup, location.belowbar, color.new(color.green, 0), size = size.tiny)
