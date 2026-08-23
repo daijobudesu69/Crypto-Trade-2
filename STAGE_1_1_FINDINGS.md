@@ -606,3 +606,46 @@ Yang layak dikerjakan sebelum memutuskan strategi ini mati:
    harus dinyatakan eksplisit sebelum dijalankan.
 5. Stage 0 logger tetap jalan paralel — Stage 1.1 tidak mengubah apapun di sana,
    dan layer OI/LSR/CVD adalah satu-satunya sumber informasi yang belum diuji.
+
+---
+
+## 11. Addendum — R9–R13: struktur pasar (SMC, port dari LuxAlgo)
+
+Ditambahkan setelah Dew menunjuk lubang di R0–R8: brief §4 tidak memasukkan
+struktur pasar sama sekali, padahal dokumen strategi §4 menempatkan BOS/CHoCH
+sebagai **penentu arah utama** dan EMA9 hanya sebagai pengatur waktu masuk.
+Jadi selama ini yang diuji justru bagian yang menurut dokumen sendiri bukan
+penentu.
+
+**Sumber algoritma:** "Smart Money Concepts [LuxAlgo]" (Pine v5), © LuxAlgo,
+CC BY-NC-SA 4.0. Diport ke Python di `src/smc.py` — bagian struktur saja
+(`leg()`, pivot, BOS/CHoCH, trend bias), bukan order block / FVG / zona.
+Parameter default dipertahankan: swing length 50, internal length 5,
+confluence filter off. Diuji pada 748 symbol × 730 hari = 346.856 observasi.
+Biaya: limit order masuk+keluar tanpa slippage (keputusan Dew) = 0,04% round trip.
+
+| Run | Faktor | Spread net | CI 95% | t | Vonis |
+|---|---|---:|---|---:|:-:|
+| R9 | Bias struktur swing (len 50) | −0,271% | [−0,726%, +0,184%] | −1,17 | **KILL** |
+| R10 | Bias struktur internal (len 5) | −0,191% | [−0,656%, +0,274%] | −0,81 | **KILL** |
+| R11 | Jenis event terakhir (BOS/CHoCH) | −0,528% s/d +0,120% | semua melewati nol | \|t\|<1,6 | **KILL** |
+| R12 | Keselarasan swing × internal | −0,388% | [−1,056%, +0,279%] | −1,14 | **KILL** |
+| R13 | CHoCH + trigger EMA9 (alur §4) | — | — | — | **KILL** |
+
+Tiga catatan:
+
+1. **Tandanya terbalik.** Struktur bullish diikuti return *lebih rendah*
+   (long saat SBULL\|IBULL = −0,357%) dibanding struktur bearish
+   (long saat SBEAR\|IBEAR = +0,031%). Semua tidak signifikan, tapi arahnya
+   konsisten berlawanan dengan klaim SMC di keempat run.
+2. **Alur lengkap §4 diuji dan gagal.** `CHoCH bullish dalam 24 jam + EMA9 searah`
+   → long net −0,101% (t=−0,29), n=43.996, 718 hari. Pada ukuran market-neutral
+   justru **−0,135% dengan t=−2,16** — sedikit lebih buruk dari cross-section,
+   bukan lebih baik.
+3. **EMA9 tetap tidak menambah apapun**, bahkan setelah dikondisikan pada CHoCH:
+   `CHoCH_bull+EMA9up` −0,101% vs `CHoCH_bull_noEMA` −0,343%; selisihnya di dalam
+   noise dan kedua-duanya negatif.
+
+Konsekuensi untuk conviction: klaim "kerangka 3-lapis valid secara struktur"
+(80%, dokumen strategi §11) dan penempatan BOS/CHoCH sebagai penentu arah
+tidak didukung data pada horizon 1–2 hari di universe ini.
