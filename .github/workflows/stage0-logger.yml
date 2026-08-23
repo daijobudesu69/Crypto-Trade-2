@@ -1,0 +1,61 @@
+name: Stage 0 data logger
+
+# Kenapa di GitHub Actions, bukan di mesin lokal:
+# fapi.binance.com diblokir dari mesin Dew (ConnectTimeout). Runner GitHub
+# tidak terkena blokir itu. Data OI/LSR/taker retensinya hanya 30 hari dan
+# arsip metrics/ di data.binance.vision berhenti Januari 2022 — jadi data ini
+# hanya ada ke depan.
+
+on:
+  schedule:
+    - cron: "20 1 * * *"      # 01:20 UTC setiap hari
+  workflow_dispatch:           # bisa dijalankan manual dari tab Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stage0-logger
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install --quiet requests pandas pyarrow
+
+      - name: Pull Binance futures data
+        run: python src/logger.py --workers 6
+
+      - name: Commit
+        run: |
+          git config user.name  "stage0-logger"
+          git config user.email "actions@github.com"
+          git add oi_logs
+          if git diff --staged --quiet; then
+            echo "tidak ada data baru"
+            exit 0
+          fi
+          git commit -m "data: Stage 0 logger $(date -u +%Y-%m-%d)"
+          git pull --rebase --autostash origin main || true
+          git push origin HEAD:main
+
+      - name: Ringkasan
+        if: always()
+        run: |
+          echo "### Stage 0 logger $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          LATEST=$(ls -d oi_logs/date=* 2>/dev/null | tail -1)
+          if [ -n "$LATEST" ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat "$LATEST/manifest.json" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "total hari terkumpul: $(ls -d oi_logs/date=* | wc -l)" >> $GITHUB_STEP_SUMMARY
+          fi

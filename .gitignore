@@ -26,3 +26,9 @@ secrets.*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Pengecualian: output logger Stage 0 WAJIB di-commit (itu satu-satunya
+# tempat data OI/LSR/taker tersimpan — retensi Binance cuma 30 hari)
+!oi_logs/
+!oi_logs/**/*.parquet
+!oi_logs/**/*.json
