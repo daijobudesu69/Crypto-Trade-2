@@ -65,13 +65,12 @@ quantTol  = input.float(10.0, "Toleransi kuantisasi (%)", minval = 0, group = gZ
 // ------------------------------------------------------------------ parse tanggal
 var array<string> sigDates = array.new<string>()
 if barstate.isfirst and str.length(datesRaw) > 0
-    cleaned = str.replace_all(str.replace_all(datesRaw, "\n", ","), " ", "")
+    step1 = str.replace_all(datesRaw, "\n", ",")
+    step2 = str.replace_all(step1, "\r", "")
+    cleaned = str.replace_all(str.replace_all(step2, " ", ""), "\"", "")
     for part in str.split(cleaned, ",")
-        if str.length(part) == 10
-            sigDates.push(part)
-
-todayStr = str.format_time(time, "yyyy-MM-dd", "UTC")
-isSignalDate = sigDates.size() > 0 and sigDates.includes(todayStr)
+        if str.length(part) >= 10
+            sigDates.push(str.substring(part, 0, 10))
 
 // ------------------------------------------------------------------ timing
 secPerBar = timeframe.in_seconds()
