@@ -32,7 +32,7 @@ jobs:
       - name: Install deps
         run: pip install --quiet requests pandas pyarrow
 
-      - name: Pull Binance futures data
+      - name: Pull futures positioning data (Gate.io)
         run: python src/logger.py --workers 8
 
       - name: Commit
