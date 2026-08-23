@@ -62,8 +62,7 @@ emaMode  = input.string("Tanpa trigger", "Trigger EMA",
 
 grpC = "Biaya"
 fundingPerPeriod = input.float(0.0, "Perkiraan funding per periode (%)", step=0.001, group=grpC,
-     tooltip="TIDAK tersedia di TradingView. Isi manual kalau mau memperkirakan. Di data asli " +
-             "median funding 48h = +0.049%, tapi rentangnya -61.7% s/d +15.4% per observasi.")
+     tooltip="TIDAK tersedia di TradingView. Isi manual kalau mau memperkirakan. Di data asli median funding 48h = +0.049%, tapi rentangnya -61.7% s/d +15.4% per observasi.")
 fundingHours = input.int(8, "Interval funding (jam)", options=[4, 8], group=grpC,
      tooltip="Di universe Binance: 474 symbol pakai 4 jam, 261 symbol pakai 8 jam.")
 
@@ -89,9 +88,11 @@ state21 = close > ema21 and ema21 > ema21[1] ? 1 : close < ema21 and ema21 < ema
 
 isLong  = dirMode == "Long"
 wantDir = isLong ? 1 : -1
-triggerOK = emaMode == "Tanpa trigger" ? true :
-            emaMode == "EMA9 searah"   ? state9[1]  == wantDir :
-                                         state21[1] == wantDir
+useEma9   = emaMode == "EMA9 searah"
+useEma21  = emaMode == "EMA21 searah"
+trig9     = state9[1] == wantDir
+trig21    = state21[1] == wantDir
+triggerOK = useEma9 ? trig9 : useEma21 ? trig21 : true
 
 // ------------------------------------------------------------------ sinyal
 // Fitur dibaca dari bar yang SUDAH closed ([1]); entry di open bar berjalan.
