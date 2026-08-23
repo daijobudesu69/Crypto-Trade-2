@@ -1,0 +1,28 @@
+# Data mentah & cache — ukurannya GB, jangan pernah di-commit
+data/
+*.parquet
+*.zip
+*.csv.gz
+.cache/
+
+# Hasil run — commit hanya summary & chart, bukan intermediate
+results/**/*.parquet
+results/**/tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Kredensial — tidak ada API key yang dibutuhkan Stage 1.1,
+# tapi jaga-jaga untuk stage eksekusi nanti
+.env
+*.key
+secrets.*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
