@@ -1,0 +1,23 @@
+{
+ "R8_conditioning_full": {
+  "short": "D6"
+ },
+ "R8_conditioning_exec": {
+  "short": "D6"
+ },
+ "R8_conditioning_live_diag": {
+  "short": "D6"
+ },
+ "n_tests_bonferroni": 194,
+ "n_tests_family": {
+  "R0": 2,
+  "R1": 30,
+  "R2": 10,
+  "R3": 10,
+  "R4": 40,
+  "R5": 10,
+  "R6": 30,
+  "R7": 50,
+  "R8": 14
+ }
+}
