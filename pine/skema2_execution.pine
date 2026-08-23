@@ -147,11 +147,8 @@ if barstate.islast
 
 // peringatan kalau tidak ada sinyal sama sekali — supaya tidak terlihat "rusak"
 if barstate.islast and not useTest and sigDates.size() == 0
-    label.new(bar_index, high, "Tidak ada tanggal sinyal dimuat.
-" +
-         "Tempel kolom tanggal_entry dari results/skema2_sinyal.csv
-" +
-         "ke input 'Tanggal sinyal', atau pilih mode 'Uji mekanika'.",
+    warnTxt = "Tidak ada tanggal sinyal dimuat. Tempel kolom tanggal_entry dari results/skema2_sinyal.csv ke input 'Tanggal sinyal', atau pilih mode 'Uji mekanika'."
+    label.new(bar_index, high, warnTxt,
          style = label.style_label_down, color = color.new(color.orange, 20),
          textcolor = color.white, size = size.normal)
 if barstate.islast and not isHourly
