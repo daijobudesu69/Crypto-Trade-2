@@ -40,9 +40,14 @@ strategy("Skema 2 - manajer eksekusi (sinyal dari luar)",
      process_orders_on_close = false)
 
 // ------------------------------------------------------------------ input
-gS = "Sinyal (dari scanner)"
-datesRaw = input.text_area("", "Tanggal sinyal (YYYY-MM-DD, satu per baris atau dipisah koma)",
-     group = gS, tooltip = "Tempel keluaran scanner untuk symbol ini. Kosong = tidak ada trade.")
+gS = "Sinyal"
+mode = input.string("Daftar tanggal", "Sumber sinyal",
+     options = ["Daftar tanggal", "Uji mekanika (tiap N hari)"], group = gS,
+     tooltip = "Daftar tanggal = sinyal asli dari results/skema2_sinyal.csv. " +
+               "Uji mekanika = entry berkala, HANYA untuk melihat cara kerja stop/target/batas waktu.")
+datesRaw = input.text_area("", "Tanggal sinyal (YYYY-MM-DD, dipisah koma atau baris baru)",
+     group = gS, tooltip = "Tempel kolom tanggal_entry dari results/skema2_sinyal.csv untuk symbol ini.")
+testEvery = input.int(5, "Uji mekanika: entry tiap berapa hari", minval = 1, maxval = 60, group = gS)
 
 gX = "Aturan keluar Skema 2"
 stopPct   = input.float(3.0, "Stop (%)",   minval = 0.1, step = 0.1, group = gX)
@@ -89,7 +94,10 @@ execOK    = qtyActual >= stepSize and quantErr <= quantTol
 // Tanggal sinyal dari scanner mengacu pada tanggal ENTRY, jadi bar pemicunya
 // adalah bar terakhir hari SEBELUMNYA (yang closed tepat di jam entry).
 nextDayStr = str.format_time(time + secPerBar * 1000, "yyyy-MM-dd", "UTC")
-fireHere   = sigDates.size() > 0 and sigDates.includes(nextDayStr) and atEntryEdge
+useTest    = mode == "Uji mekanika (tiap N hari)"
+dayNum     = math.floor(time / 86400000)
+fireHere   = atEntryEdge and (useTest ? (dayNum % testEvery == 0)
+                                      : (sigDates.size() > 0 and sigDates.includes(nextDayStr)))
 
 canEnter = isHourly and fireHere and execOK and strategy.position_size == 0 and qtyActual > 0
 if canEnter
@@ -117,8 +125,8 @@ if barstate.islast
     table.cell(t, 1, 0, isHourly ? "chart 1H OK" : "PAKAI CHART 1H", text_size = size.small,
          bgcolor = isHourly ? ok : bad)
     table.cell(t, 0, 1, "tanggal sinyal dimuat", text_size = size.tiny)
-    table.cell(t, 1, 1, str.tostring(sigDates.size()), text_size = size.tiny,
-         bgcolor = sigDates.size() > 0 ? ok : bad)
+    table.cell(t, 1, 1, useTest ? "MODE UJI" : str.tostring(sigDates.size()), text_size = size.tiny,
+         bgcolor = useTest ? warn : (sigDates.size() > 0 ? ok : bad))
     table.cell(t, 0, 2, "ekuitas", text_size = size.tiny)
     table.cell(t, 1, 2, "$" + str.tostring(equityNow, "#.##"), text_size = size.tiny)
     table.cell(t, 0, 3, "notional sekarang", text_size = size.tiny)
@@ -137,6 +145,19 @@ if barstate.islast
          bgcolor = strategy.netprofit >= 0 ? ok : bad)
     table.cell(t, 0, 9, "SINYAL dari scanner", text_size = size.tiny, bgcolor = warn)
     table.cell(t, 1, 9, "bukan dari script ini", text_size = size.tiny, bgcolor = warn)
+
+// peringatan kalau tidak ada sinyal sama sekali — supaya tidak terlihat "rusak"
+if barstate.islast and not useTest and sigDates.size() == 0
+    label.new(bar_index, high, "Tidak ada tanggal sinyal dimuat.
+" +
+         "Tempel kolom tanggal_entry dari results/skema2_sinyal.csv
+" +
+         "ke input 'Tanggal sinyal', atau pilih mode 'Uji mekanika'.",
+         style = label.style_label_down, color = color.new(color.orange, 20),
+         textcolor = color.white, size = size.normal)
+if barstate.islast and not isHourly
+    label.new(bar_index, low, "Chart harus 1 JAM", style = label.style_label_up,
+         color = color.new(color.red, 20), textcolor = color.white, size = size.normal)
 
 bgcolor(canEnter ? color.new(color.green, 88) : na)
 plotshape(canEnter, "entry", shape.triangleup, location.belowbar, color.new(color.green, 0), size = size.tiny)
