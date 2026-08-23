@@ -133,7 +133,26 @@ def main() -> None:
 
     info = get("/fapi/v1/exchangeInfo")
     if info is None:
-        print("FATAL: exchangeInfo tidak bisa diambil", file=sys.stderr)
+        # diagnosa: apa sebenarnya yang dikembalikan endpoint-nya
+        print("FATAL: exchangeInfo tidak bisa diambil. Diagnosa:", file=sys.stderr)
+        for host in ["https://fapi.binance.com/fapi/v1/ping",
+                     "https://api.binance.com/api/v3/ping",
+                     "https://data-api.binance.vision/api/v3/ping",
+                     "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/"]:
+            try:
+                rr = requests.get(host, timeout=15)
+                body = rr.text[:200].replace("
+", " ")
+                print(f"  {host}
+    HTTP {rr.status_code}  body={body}", file=sys.stderr)
+            except Exception as e:
+                print(f"  {host}
+    FAIL {type(e).__name__}: {str(e)[:160]}", file=sys.stderr)
+        try:
+            rr = requests.get("https://ipinfo.io/json", timeout=15)
+            print(f"  runner IP info: {rr.text[:200]}", file=sys.stderr)
+        except Exception as e:
+            print(f"  ipinfo gagal: {e}", file=sys.stderr)
         sys.exit(1)
     ex = flatten_exchange_info(info)
     ex.to_parquet(dest / "exchangeInfo.parquet", index=False, compression="zstd")
