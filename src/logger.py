@@ -1,22 +1,35 @@
 """Stage 0 — data logger harian (action plan §2).
 
-Retensi Binance untuk OI / long-short ratio / taker ratio hanya 30 hari, dan
-arsip `data.binance.vision/futures/um/daily/metrics/` BERHENTI 13 Januari 2022
-(sudah diverifikasi). Artinya data ini hanya ada ke depan: setiap hari tanpa
-logger = data hilang permanen, tidak bisa diambil dari manapun.
+MASALAH AKSES (terverifikasi, bukan dugaan)
+-------------------------------------------
+  fapi.binance.com dari mesin Dew (Indonesia) : ConnectTimeout — blokir ISP
+  fapi.binance.com dari GitHub Actions (US)   : HTTP 451 "restricted location"
+  api.bybit.com / www.okx.com dari mesin Dew  : ConnectTimeout
+  api.gateio.ws                               : HTTP 200 — JALAN
+  data.binance.vision                         : HTTP 200 (arsip klines/funding saja)
 
-PENTING — kenapa ini jalan di GitHub Actions, bukan di mesin Dew:
-fapi.binance.com tidak dapat diakses dari mesin lokal (ConnectTimeout, semua
-domain binance.com diblokir). Runner GitHub Actions tidak terkena blokir itu.
+Jadi data posisi (OI / long-short / taker / likuidasi) tidak bisa diambil dari
+Binance sama sekali dari lokasi manapun yang tersedia. Sumber pengganti:
+**Gate.io** `/futures/usdt/contract_stats`, yang justru memuat lebih banyak
+field daripada empat endpoint Binance yang diminta action plan §2:
 
-Endpoint (semua publik, tanpa API key):
-  /futures/data/openInterestHist            <- 30 hari retensi
-  /futures/data/globalLongShortAccountRatio <- 30 hari
-  /futures/data/topLongShortPositionRatio   <- 30 hari
-  /futures/data/takerlongshortRatio         <- 30 hari
-  /fapi/v1/premiumIndex                     <- snapshot, semua symbol sekaligus
-  /fapi/v1/ticker/24hr                      <- snapshot, semua symbol sekaligus
-  /fapi/v1/exchangeInfo                     <- stepSize/minQty/MIN_NOTIONAL
+  open_interest, open_interest_usd     <- setara openInterestHist
+  lsr_account, top_lsr_account         <- setara globalLongShortAccountRatio
+  top_lsr_size, top_long_size          <- setara topLongShortPositionRatio
+  lsr_taker, long_taker_size           <- setara takerlongshortRatio
+  long_liq_usd, short_liq_usd          <- likuidasi (Binance TIDAK menyediakan ini;
+                                          dokumen strategi §6 menganggapnya mustahil)
+  mark_price, last_funding_rate, long_users, short_users
+
+PERINGATAN YANG WAJIB DIBAWA KE ANALISIS
+----------------------------------------
+Ini posisi trader **Gate.io**, bukan Binance. Basis trader-nya berbeda.
+Boleh dipakai sebagai proksi untuk menguji apakah positioning punya kandungan
+prediktif, TIDAK boleh diklaim sebagai OI Binance. Overlap symbol dengan
+universe Binance: 595 dari 769 (77%).
+
+Kelebihan tak terduga: Gate.io menyimpan ~42 hari riwayat 1 jam (Binance hanya
+30), jadi tiap run menangkap lebih banyak dan gap lebih tahan kalau logger telat.
 """
 from __future__ import annotations
 
@@ -32,16 +45,11 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-BASE = "https://fapi.binance.com"
+GATE = "https://api.gateio.ws/api/v4"
+BINANCE = "https://fapi.binance.com"
 OUT = Path(__file__).resolve().parent.parent / "oi_logs"
-PERIOD = "1h"
-LIMIT = 72                      # 3 hari, tumpang tindih supaya gap tertutup
-HIST = [
-    ("openInterestHist", "/futures/data/openInterestHist"),
-    ("globalLongShortAccountRatio", "/futures/data/globalLongShortAccountRatio"),
-    ("topLongShortPositionRatio", "/futures/data/topLongShortPositionRatio"),
-    ("takerlongshortRatio", "/futures/data/takerlongshortRatio"),
-]
+INTERVAL = "1h"
+LIMIT = 1000                    # ~42 hari riwayat per panggilan
 _local = threading.local()
 _lock = threading.Lock()
 
@@ -50,20 +58,21 @@ def sess() -> requests.Session:
     s = getattr(_local, "s", None)
     if s is None:
         s = requests.Session()
-        s.headers["User-Agent"] = "dew-stage0-logger/1.0"
+        s.headers.update({"Accept": "application/json",
+                          "User-Agent": "dew-stage0-logger/2.0"})
         s.mount("https://", requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16))
         _local.s = s
     return s
 
 
-def get(path: str, params: dict | None = None, tries: int = 4):
+def get(url: str, params: dict | None = None, tries: int = 4):
     delay = 1.0
     for _ in range(tries):
         try:
-            r = sess().get(BASE + path, params=params, timeout=25)
+            r = sess().get(url, params=params, timeout=30)
             if r.status_code == 200:
                 return r.json()
-            if r.status_code in (418, 429):          # rate limit
+            if r.status_code in (418, 429, 503):
                 time.sleep(float(r.headers.get("Retry-After", delay)))
                 delay *= 2
                 continue
@@ -78,43 +87,58 @@ def get(path: str, params: dict | None = None, tries: int = 4):
     return None
 
 
-def perp_usdt_symbols(info: dict) -> list[str]:
-    return sorted(s["symbol"] for s in info["symbols"]
-                  if s.get("contractType") == "PERPETUAL"
-                  and s.get("quoteAsset") == "USDT"
-                  and s.get("status") == "TRADING")
+def probe() -> dict:
+    """Cek sumber mana yang hidup dari lokasi ini. Selalu dicatat ke manifest."""
+    out = {}
+    for name, url in [("gate", GATE + "/futures/usdt/contracts?limit=1"),
+                      ("binance_fapi", BINANCE + "/fapi/v1/ping")]:
+        try:
+            r = sess().get(url, timeout=15)
+            out[name] = {"status": r.status_code,
+                         "body": " ".join(r.text[:120].split())}
+        except requests.RequestException as e:
+            out[name] = {"status": None, "body": f"{type(e).__name__}"}
+    return out
 
 
-def flatten_exchange_info(info: dict) -> pd.DataFrame:
+def gate_contracts() -> list[str]:
+    j = get(GATE + "/futures/usdt/contracts")
+    if not j:
+        return []
+    return sorted(c["name"] for c in j if not c.get("in_delisting"))
+
+
+def gate_stats(contract: str):
+    j = get(GATE + "/futures/usdt/contract_stats",
+            {"contract": contract, "interval": INTERVAL, "limit": LIMIT})
+    if not isinstance(j, list) or not j:
+        return None
+    df = pd.DataFrame(j)
+    df["contract"] = contract
+    df["symbol"] = contract.replace("_", "")      # kunci join ke universe Binance
+    return df
+
+
+def binance_exchange_info(dest: Path) -> bool:
+    """Bonus kalau Binance kebetulan bisa diakses: simpan filter LOT_SIZE asli,
+    yang selama ini hanya bisa diturunkan dari GCD volume klines."""
+    j = get(BINANCE + "/fapi/v1/exchangeInfo")
+    if not j:
+        return False
     rows = []
-    for s in info["symbols"]:
+    for s in j.get("symbols", []):
         if s.get("contractType") != "PERPETUAL" or s.get("quoteAsset") != "USDT":
             continue
         f = {x["filterType"]: x for x in s.get("filters", [])}
-        rows.append({
-            "symbol": s["symbol"], "status": s.get("status"),
-            "pricePrecision": s.get("pricePrecision"),
-            "quantityPrecision": s.get("quantityPrecision"),
-            "stepSize": f.get("LOT_SIZE", {}).get("stepSize"),
-            "minQty": f.get("LOT_SIZE", {}).get("minQty"),
-            "maxQty": f.get("LOT_SIZE", {}).get("maxQty"),
-            "tickSize": f.get("PRICE_FILTER", {}).get("tickSize"),
-            "minNotional": f.get("MIN_NOTIONAL", {}).get("notional"),
-            "onboardDate": s.get("onboardDate"),
-        })
-    return pd.DataFrame(rows)
-
-
-def fetch_hist(sym: str) -> dict:
-    out = {}
-    for name, path in HIST:
-        j = get(path, {"symbol": sym, "period": PERIOD, "limit": LIMIT})
-        if isinstance(j, list) and j:
-            df = pd.DataFrame(j)
-            df["symbol"] = sym
-            out[name] = df
-        time.sleep(0.02)
-    return out
+        rows.append({"symbol": s["symbol"], "status": s.get("status"),
+                     "stepSize": f.get("LOT_SIZE", {}).get("stepSize"),
+                     "minQty": f.get("LOT_SIZE", {}).get("minQty"),
+                     "tickSize": f.get("PRICE_FILTER", {}).get("tickSize"),
+                     "minNotional": f.get("MIN_NOTIONAL", {}).get("notional"),
+                     "onboardDate": s.get("onboardDate")})
+    pd.DataFrame(rows).to_parquet(dest / "binance_exchangeInfo.parquet",
+                                  index=False, compression="zstd")
+    return True
 
 
 def main() -> None:
@@ -126,71 +150,80 @@ def main() -> None:
 
     t0 = time.time()
     now = datetime.now(timezone.utc)
-    day = now.strftime("%Y-%m-%d")
-    dest = Path(args.out) / f"date={day}"
+    dest = Path(args.out) / f"date={now.strftime('%Y-%m-%d')}"
     dest.mkdir(parents=True, exist_ok=True)
-    print(f"Stage 0 logger — {now.isoformat()} -> {dest}", flush=True)
+    print(f"Stage 0 logger — {now.isoformat()}", flush=True)
 
-    info = get("/fapi/v1/exchangeInfo")
-    if info is None:
-        # diagnosa: apa sebenarnya yang dikembalikan endpoint-nya
-        print("FATAL: exchangeInfo tidak bisa diambil. Diagnosa:", file=sys.stderr)
-        for host in ["https://fapi.binance.com/fapi/v1/ping",
-                     "https://api.binance.com/api/v3/ping",
-                     "https://data-api.binance.vision/api/v3/ping",
-                     "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1h/"]:
-            try:
-                rr = requests.get(host, timeout=15)
-                body = " ".join(rr.text[:200].split())
-                print(f"  {host} -> HTTP {rr.status_code}  body={body}", file=sys.stderr)
-            except Exception as e:
-                print(f"  {host} -> FAIL {type(e).__name__}: {str(e)[:160]}", file=sys.stderr)
-        try:
-            rr = requests.get("https://ipinfo.io/json", timeout=15)
-            print(f"  runner IP info: {rr.text[:200]}", file=sys.stderr)
-        except Exception as e:
-            print(f"  ipinfo gagal: {e}", file=sys.stderr)
+    pr = probe()
+    for k, v in pr.items():
+        print(f"  probe {k:13s} HTTP {v['status']}  {v['body'][:90]}", flush=True)
+    if pr.get("gate", {}).get("status") != 200:
+        print("FATAL: Gate.io tidak bisa diakses dari lokasi ini.", file=sys.stderr)
+        json.dump({"utc": now.isoformat(), "probe": pr, "status": "failed"},
+                  open(dest / "manifest.json", "w"), indent=1)
         sys.exit(1)
-    ex = flatten_exchange_info(info)
-    ex.to_parquet(dest / "exchangeInfo.parquet", index=False, compression="zstd")
-    syms = perp_usdt_symbols(info)
+
+    # Jangan panggil Binance kalau probe sudah bilang mati — retry 4x dengan
+    # timeout 30s membuang ~2 menit tiap run tanpa hasil.
+    if pr.get("binance_fapi", {}).get("status") == 200:
+        got_binance = binance_exchange_info(dest)
+    else:
+        got_binance = False
+    print(f"  binance exchangeInfo: "
+          f"{'TERSIMPAN' if got_binance else 'dilewati (probe gagal)'}", flush=True)
+
+    syms = gate_contracts()
     if args.limit_symbols:
         syms = syms[: args.limit_symbols]
-    print(f"  exchangeInfo: {len(ex)} symbol perp USDT ({len(syms)} TRADING)", flush=True)
+    print(f"  kontrak perp USDT Gate.io: {len(syms)}", flush=True)
 
-    for nm, path in [("premiumIndex", "/fapi/v1/premiumIndex"),
-                     ("ticker24hr", "/fapi/v1/ticker/24hr")]:
-        j = get(path)
-        if j:
-            pd.DataFrame(j).to_parquet(dest / f"{nm}.parquet", index=False, compression="zstd")
-            print(f"  {nm}: {len(j)} baris", flush=True)
-
-    buckets = {n: [] for n, _ in HIST}
-    done = 0
-    with ThreadPoolExecutor(max_workers=args.workers) as ex_:
-        futs = {ex_.submit(fetch_hist, s): s for s in syms}
+    # --- inkremental: hanya simpan baris yang BELUM pernah tercatat.
+    # Run pertama menarik ~42 hari (bootstrap), run berikutnya hanya ~24 baris
+    # per kontrak per hari. Tanpa ini repo tumbuh ~18 GB/tahun.
+    state_f = Path(args.out) / "_state.json"
+    state = json.loads(state_f.read_text()) if state_f.exists() else {}
+    frames, done, fails = [], 0, 0
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futs = {ex.submit(gate_stats, s): s for s in syms}
         for f in as_completed(futs):
-            for k, v in f.result().items():
-                buckets[k].append(v)
+            df = f.result()
+            if df is None:
+                fails += 1
+            else:
+                last = state.get(df["contract"].iloc[0])
+                if last is not None:
+                    df = df[df["time"] > last]
+                if len(df):
+                    frames.append(df)
             done += 1
-            if done % 100 == 0:
+            if done % 200 == 0:
                 with _lock:
-                    print(f"  {done}/{len(syms)} symbol  {time.time()-t0:.0f}s", flush=True)
+                    print(f"  {done}/{len(syms)}  {time.time()-t0:.0f}s", flush=True)
 
-    manifest = {"utc": now.isoformat(), "date": day, "n_symbols": len(syms),
-                "period": PERIOD, "limit": LIMIT, "files": {}}
-    for name, frames in buckets.items():
-        if not frames:
-            print(f"  WARNING: {name} kosong", flush=True)
-            continue
-        df = pd.concat(frames, ignore_index=True)
-        tcol = "timestamp" if "timestamp" in df.columns else "createTime"
-        if tcol in df.columns:
-            df = df.drop_duplicates(subset=["symbol", tcol])
-        df.to_parquet(dest / f"{name}.parquet", index=False, compression="zstd")
-        manifest["files"][name] = {"rows": int(len(df)),
-                                   "symbols": int(df["symbol"].nunique())}
-        print(f"  {name}: {len(df):,} baris / {df['symbol'].nunique()} symbol", flush=True)
+    manifest = {"utc": now.isoformat(), "source": "gateio_contract_stats",
+                "interval": INTERVAL, "limit": LIMIT, "probe": pr,
+                "n_contracts": len(syms), "n_failed": fails,
+                "binance_exchangeinfo": got_binance}
+    if frames:
+        d = pd.concat(frames, ignore_index=True).drop_duplicates(["contract", "time"])
+        d = d.sort_values(["contract", "time"])
+        # kolom duplikat dari API (nilainya sama persis dengan pasangannya)
+        d = d.drop(columns=[c for c in ("short_liq_usd_new", "long_liq_usd_new")
+                            if c in d.columns])
+        for c, t in d.groupby("contract")["time"].max().items():
+            state[c] = int(t)
+        state_f.write_text(json.dumps(state))
+        d.to_parquet(dest / "gate_contract_stats.parquet", index=False, compression="zstd")
+        manifest.update({
+            "rows": int(len(d)), "symbols": int(d["contract"].nunique()),
+            "time_min": datetime.fromtimestamp(int(d["time"].min()), timezone.utc).isoformat(),
+            "time_max": datetime.fromtimestamp(int(d["time"].max()), timezone.utc).isoformat(),
+            "columns": list(d.columns)})
+        print(f"  gate_contract_stats: {len(d):,} baris / {d['contract'].nunique()} kontrak "
+              f"({manifest['time_min'][:10]} .. {manifest['time_max'][:10]})", flush=True)
+    else:
+        manifest["status"] = "no_new_data"
+        print("  tidak ada baris baru sejak run terakhir", flush=True)
 
     manifest["elapsed_sec"] = round(time.time() - t0, 1)
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=1))

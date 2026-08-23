@@ -33,7 +33,7 @@ jobs:
         run: pip install --quiet requests pandas pyarrow
 
       - name: Pull Binance futures data
-        run: python src/logger.py --workers 6
+        run: python src/logger.py --workers 8
 
       - name: Commit
         run: |

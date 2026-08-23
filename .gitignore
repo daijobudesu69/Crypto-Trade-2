@@ -32,3 +32,4 @@ desktop.ini
 !oi_logs/
 !oi_logs/**/*.parquet
 !oi_logs/**/*.json
+!oi_logs/*.json
