@@ -1,0 +1,152 @@
+//@version=6
+// =============================================================================
+// Stage 1.1 Replica — mekanika backtest yang dipakai, bukan strategi yang lolos
+// =============================================================================
+// PENTING, BACA DULU:
+// Stage 1.1 menguji 9 faktor dan NOL yang lolos kriteria KEEP. Script ini bukan
+// strategi yang direkomendasikan. Ini replika MEKANIKA-nya supaya Anda bisa
+// melihat sendiri di chart apa yang sebenarnya diuji:
+//   - notional $6.00 fixed (margin 3% x leverage 2x) dengan pembulatan stepSize
+//   - entry di open bar 00:00 UTC, hold persis 48 jam, keluar di open
+//   - fee taker 0.05% + slippage 0.05% per sisi (= 0.20% round trip)
+//   - filter trigger EMA9 / EMA21 (run R8)
+// Jalankan di chart 1 JAM pada symbol perp Binance (mis. BINANCE:DOGEUSDT.P).
+//
+// YANG TIDAK BISA DIREPLIKA DI PINE — dan ini justru faktor utamanya:
+//   1. funding_xs_pct (R1, R6, R7) butuh MERANKING ~470 coin pada hari yang sama.
+//      Pine hanya melihat satu symbol. Tidak ada jalan keluar di Pine.
+//   2. Funding rate Binance tidak tersedia sebagai deret data di TradingView,
+//      jadi biaya funding aktual tidak bisa dihitung. Disediakan input manual
+//      (fundingPerPeriod) sebagai perkiraan kasar.
+//   3. Versi market-neutral (kurangi mean cross-section harian) butuh seluruh
+//      universe. Tidak mungkin di Pine.
+//   4. Standard error di-cluster per tanggal — itu statistik, bukan chart.
+// Artinya: backtest di sini = R0 (baseline) + R8 (trigger EMA) saja.
+// Hasil Stage 1.1 untuk keduanya: expectancy negatif. Script ini seharusnya
+// memperlihatkan hal yang sama.
+//
+// stepSize per symbol ada di results/gate_per_symbol.csv (kolom step_size_mode).
+// Contoh: BTCUSDT 0.001, ETHUSDT 0.001, XRPUSDT 0.1, DOGEUSDT 1, 1000PEPEUSDT 1
+// =============================================================================
+
+strategy("Stage 1.1 Replica - $6 notional / 48h hold",
+     overlay              = true,
+     initial_capital      = 100,
+     currency             = currency.USD,
+     default_qty_type     = strategy.fixed,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.10,          // 0.05% fee + 0.05% slippage, PER SISI
+     pyramiding           = 0,
+     calc_on_every_tick   = false,
+     process_orders_on_close = false)
+
+// ------------------------------------------------------------------ input
+grpS = "Sizing (LOCKED di Stage 1.1 — jangan diubah)"
+notional = input.float(6.00, "Notional per trade (USD)", minval=0.1, group=grpS,
+     tooltip="margin 3% x $100 x leverage 2x = $6.00 fixed. Tidak diturunkan dari stop/ATR.")
+stepSize = input.float(1.0, "stepSize (LOT_SIZE) symbol ini", minval=0.00000001, group=grpS,
+     tooltip="Ambil dari results/gate_per_symbol.csv kolom step_size_mode. Salah isi = hasil salah.")
+quantTol = input.float(10.0, "Toleransi error kuantisasi (%)", minval=0, maxval=100, group=grpS)
+skipIfNotExecutable = input.bool(true, "Lewati trade kalau tidak executable di $6", group=grpS)
+
+grpT = "Timing"
+holdHours = input.int(48, "Hold (jam)", minval=1, maxval=168, group=grpT,
+     tooltip="Label utama Stage 1.1 = 48 jam. 24 dan 72 juga diuji.")
+entryHourUTC = input.int(0, "Jam entry (UTC)", minval=0, maxval=23, group=grpT)
+
+grpD = "Arah & filter (run R8)"
+dirMode  = input.string("Long", "Arah", options=["Long", "Short"], group=grpD)
+emaMode  = input.string("Tanpa trigger", "Trigger EMA",
+     options=["Tanpa trigger", "EMA9 searah", "EMA21 searah"], group=grpD,
+     tooltip="R8: EMA9 menambah +0.023% (t=0.08) dan EMA21 -0.209% (t=-0.74). Keduanya nol.")
+
+grpC = "Biaya"
+fundingPerPeriod = input.float(0.0, "Perkiraan funding per periode (%)", step=0.001, group=grpC,
+     tooltip="TIDAK tersedia di TradingView. Isi manual kalau mau memperkirakan. Di data asli " +
+             "median funding 48h = +0.049%, tapi rentangnya -61.7% s/d +15.4% per observasi.")
+fundingHours = input.int(8, "Interval funding (jam)", options=[4, 8], group=grpC,
+     tooltip="Di universe Binance: 474 symbol pakai 4 jam, 261 symbol pakai 8 jam.")
+
+// ------------------------------------------------------------------ guard
+isHourly = timeframe.isminutes and timeframe.multiplier == 60
+if barstate.islast and not isHourly
+    runtime.error("Jalankan di chart 1 JAM — Stage 1.1 memakai bar 1H.")
+
+// ------------------------------------------------------------------ eksekutabilitas (§2.5)
+// Dievaluasi per bar, bukan sekali di awal: notional tetap tapi harga bergerak.
+qtyIdeal      = notional / open
+qtyActual     = math.floor(qtyIdeal / stepSize) * stepSize
+notionalReal  = qtyActual * open
+quantErr      = math.abs(notionalReal - notional) / notional * 100.0
+executable    = qtyActual >= stepSize and quantErr <= quantTol
+
+// ------------------------------------------------------------------ fitur EMA (§3.1)
+// +1 kalau close > EMA dan slope EMA > 0; -1 kalau kebalikan; 0 selain itu.
+ema9   = ta.ema(close, 9)
+ema21  = ta.ema(close, 21)
+state9  = close > ema9  and ema9  > ema9[1]  ? 1 : close < ema9  and ema9  < ema9[1]  ? -1 : 0
+state21 = close > ema21 and ema21 > ema21[1] ? 1 : close < ema21 and ema21 < ema21[1] ? -1 : 0
+
+isLong  = dirMode == "Long"
+wantDir = isLong ? 1 : -1
+triggerOK = emaMode == "Tanpa trigger" ? true :
+            emaMode == "EMA9 searah"   ? state9[1]  == wantDir :
+                                         state21[1] == wantDir
+
+// ------------------------------------------------------------------ sinyal
+// Fitur dibaca dari bar yang SUDAH closed ([1]); entry di open bar berjalan.
+// Ini konvensi anti-lookahead yang sama dengan src/features.py.
+newDay    = hour(time, "UTC") == entryHourUTC and hour(time[1], "UTC") != entryHourUTC
+execOK    = executable or not skipIfNotExecutable
+flat      = strategy.position_size == 0
+canEnter  = newDay and triggerOK and execOK and flat
+
+if canEnter and qtyActual > 0
+    if isLong
+        strategy.entry("L", strategy.long, qty=qtyActual)
+    else
+        strategy.entry("S", strategy.short, qty=qtyActual)
+
+barsHeld = strategy.position_size != 0 ? bar_index - strategy.opentrades.entry_bar_index(0) : 0
+if strategy.position_size != 0 and barsHeld >= holdHours
+    strategy.close_all(comment="hold " + str.tostring(holdHours) + "h")
+
+// ------------------------------------------------------------------ biaya funding (perkiraan)
+// Pine tidak bisa memotong arus kas periodik dari equity strategy, jadi ini
+// dihitung terpisah sebagai catatan, BUKAN dikurangkan dari hasil backtester.
+var float fundingDrag = 0.0
+float nPeriods = holdHours * 1.0 / fundingHours
+if canEnter and qtyActual > 0
+    fundingDrag := fundingDrag + (fundingPerPeriod / 100.0) * nPeriods * notionalReal * (isLong ? 1 : -1)
+
+// ------------------------------------------------------------------ panel info
+var table t = table.new(position.top_right, 2, 9, border_width=1)
+if barstate.islast
+    netAfterFunding = strategy.netprofit - fundingDrag
+    table.cell(t, 0, 0, "Stage 1.1 Replica", text_size=size.small, bgcolor=color.new(color.blue, 80))
+    table.cell(t, 1, 0, dirMode + " / " + str.tostring(holdHours) + "h", text_size=size.small,
+         bgcolor=color.new(color.blue, 80))
+    table.cell(t, 0, 1, "qty ideal", text_size=size.tiny)
+    table.cell(t, 1, 1, str.tostring(qtyIdeal, "#.########"), text_size=size.tiny)
+    table.cell(t, 0, 2, "qty setelah stepSize", text_size=size.tiny)
+    table.cell(t, 1, 2, str.tostring(qtyActual, "#.########"), text_size=size.tiny)
+    table.cell(t, 0, 3, "notional aktual", text_size=size.tiny)
+    table.cell(t, 1, 3, "$" + str.tostring(notionalReal, "#.####"), text_size=size.tiny)
+    table.cell(t, 0, 4, "error kuantisasi", text_size=size.tiny)
+    table.cell(t, 1, 4, str.tostring(quantErr, "#.##") + "%", text_size=size.tiny,
+         bgcolor=quantErr <= quantTol ? color.new(color.green, 80) : color.new(color.red, 80))
+    table.cell(t, 0, 5, "executable @ $6", text_size=size.tiny)
+    table.cell(t, 1, 5, executable ? "YA" : "TIDAK", text_size=size.tiny,
+         bgcolor=executable ? color.new(color.green, 80) : color.new(color.red, 80))
+    table.cell(t, 0, 6, "jumlah trade", text_size=size.tiny)
+    table.cell(t, 1, 6, str.tostring(strategy.closedtrades), text_size=size.tiny)
+    table.cell(t, 0, 7, "net profit (tanpa funding)", text_size=size.tiny)
+    table.cell(t, 1, 7, "$" + str.tostring(strategy.netprofit, "#.##"), text_size=size.tiny,
+         bgcolor=strategy.netprofit >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+    table.cell(t, 0, 8, "net setelah perkiraan funding", text_size=size.tiny)
+    table.cell(t, 1, 8, "$" + str.tostring(netAfterFunding, "#.##"), text_size=size.tiny,
+         bgcolor=netAfterFunding >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+
+plot(ema9,  "EMA9",  color=color.new(color.orange, 0), linewidth=1)
+plot(ema21, "EMA21", color=color.new(color.blue, 0),   linewidth=1)
+bgcolor(canEnter ? color.new(color.green, 92) : na)
