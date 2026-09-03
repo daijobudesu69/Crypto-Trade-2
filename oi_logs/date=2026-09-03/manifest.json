@@ -1,0 +1,51 @@
+{
+ "utc": "2026-09-03T05:53:23.836257+00:00",
+ "source": "gateio_contract_stats",
+ "interval": "1h",
+ "limit": 1000,
+ "probe": {
+  "gate": {
+   "status": 200,
+   "body": "[{\"funding_rate_indicative\":\"0.000049\",\"mark_price_round\":\"0.0001\",\"funding_offset\":0,\"in_delisting\":false,\"risk_limit_b"
+  },
+  "binance_fapi": {
+   "status": 451,
+   "body": "{ \"code\": 0, \"msg\": \"Service unavailable from a restricted location according to 'b. Eligibility' in https://www.bin"
+  }
+ },
+ "n_contracts": 977,
+ "n_failed": 17,
+ "binance_exchangeinfo": false,
+ "rows": 22975,
+ "symbols": 960,
+ "time_min": "2026-09-02T06:00:00+00:00",
+ "time_max": "2026-09-03T05:00:00+00:00",
+ "columns": [
+  "time",
+  "lsr_taker",
+  "lsr_account",
+  "long_liq_size",
+  "short_liq_size",
+  "open_interest",
+  "short_liq_usd",
+  "mark_price",
+  "top_lsr_size",
+  "top_long_size",
+  "top_short_size",
+  "short_liq_amount",
+  "long_liq_amount",
+  "open_interest_usd",
+  "top_lsr_account",
+  "top_long_account",
+  "top_short_account",
+  "long_liq_usd",
+  "long_taker_size",
+  "short_taker_size",
+  "long_users",
+  "short_users",
+  "last_funding_rate",
+  "contract",
+  "symbol"
+ ],
+ "elapsed_sec": 57.5
+}
